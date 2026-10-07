@@ -1,9 +1,10 @@
 const express = require('express');
-const { db } = require('../db');
+const { db, tx } = require('../db');
 const { requireAdmin } = require('../auth');
 const V = require('../validate');
 const { validateBid } = require('../rules');
 const { cleanupChangeRequests } = require('./approvals');
+const { deleteAttachmentsFor } = require('./attachments');
 const { sendCSV } = require('../csv');
 const router = express.Router();
 
@@ -46,8 +47,10 @@ router.post('/', (req, res) => {
   const r = validateBid(row, { id: null });
   if (r.error) return res.status(r.code).json({ message: r.error });
 
-  const info = db.prepare(`INSERT INTO bids(${FIELDS.join(',')}) VALUES(${FIELDS.map(() => '?').join(',')})`)
-    .run(...FIELDS.map(f => row[f] ?? null));
+  // 只写入请求体中出现的字段，缺省字段交由表结构默认值（如 status='草稿'、method='公开招标'）
+  const keys = FIELDS.filter(f => row[f] !== undefined);
+  const info = db.prepare(`INSERT INTO bids(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`)
+    .run(...keys.map(f => row[f] ?? null));
   const saved = db.prepare('SELECT * FROM bids WHERE id=?').get(info.lastInsertRowid);
   saved.warnings = r.warnings;
   res.json(saved);
@@ -74,8 +77,11 @@ router.delete('/:id', requireAdmin, (req, res) => {
   if (!db.prepare('SELECT id FROM bids WHERE id=?').get(req.params.id)) {
     return res.status(404).json({ message: '招标信息不存在' });
   }
-  cleanupChangeRequests([['bid', Number(req.params.id)]]);
-  db.prepare('DELETE FROM bids WHERE id=?').run(req.params.id);
+  tx(() => {
+    cleanupChangeRequests([['bid', Number(req.params.id)]]);
+    deleteAttachmentsFor('bid', req.params.id);
+    db.prepare('DELETE FROM bids WHERE id=?').run(req.params.id);
+  });
   res.json({ ok: 1 });
 });
 

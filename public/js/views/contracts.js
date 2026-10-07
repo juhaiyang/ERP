@@ -227,8 +227,8 @@ Views.Contracts = {
     };
     const addPay = async () => {
       if (!pay.form.amount) { ElementPlus.ElMessage.warning('请填写付款金额'); return; }
-      await http.post(`/contracts/${pay.contract.id}/payments`, pay.form);
-      ElementPlus.ElMessage.success('付款已登记');
+      const resp = await http.post(`/contracts/${pay.contract.id}/payments`, pay.form);
+      notifySave(resp, '付款已登记');
       pay.form.amount = 0; pay.form.note = '';
       await loadPay(); load();
     };

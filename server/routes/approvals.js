@@ -8,7 +8,7 @@
  *  - 同一对象的多条待审批申请，批准其一后其余自动作废，避免"记录了通过却没生效"。
  */
 const express = require('express');
-const { db } = require('../db');
+const { db, tx } = require('../db');
 const { requireAdmin } = require('../auth');
 const {
   validateProject, validateBid, validateContract,
@@ -266,39 +266,44 @@ router.post('/:id/approve', requireAdmin, (req, res) => {
   const projectBefore = r.target_type === 'project'
     ? db.prepare('SELECT * FROM projects WHERE id=?').get(r.target_id) : null;
 
+  let extra = '';
+  let superseded = 0;
   try {
-    if (cols.length) {
-      db.prepare(`UPDATE ${meta.table} SET ${cols.map(c => c + '=?').join(',')} WHERE id=?`)
-        .run(...cols.map(c => payload[c]), r.target_id);
-    }
+    // 落库、作废同对象其余申请、工期联动、状态联动必须原子完成：
+    // 中途失败若留下"已批准但未生效"或半套联动数据，会造成跨模块不一致
+    tx(() => {
+      if (cols.length) {
+        db.prepare(`UPDATE ${meta.table} SET ${cols.map(c => c + '=?').join(',')} WHERE id=?`)
+          .run(...cols.map(c => payload[c]), r.target_id);
+      }
+      db.prepare(`UPDATE change_requests SET status='approved',reviewed_by=?,reviewed_at=datetime('now','localtime'),review_comment=? WHERE id=?`)
+        .run(req.user.real_name, (req.body && req.body.comment) || null, r.id);
+
+      // 同一对象的其余待审批申请自动作废：否则会出现"记录为已通过但实际未生效"的失真审计
+      superseded = db.prepare(
+        `UPDATE change_requests SET status='superseded',reviewed_by=?,reviewed_at=datetime('now','localtime'),review_comment=?
+         WHERE target_type=? AND target_id=? AND status='pending'`)
+        .run(req.user.real_name, '已被针对同一对象的另一条变更申请覆盖', r.target_type, r.target_id).changes;
+
+      // 联动1：项目开工/完工日期变化 → 顺延挂靠在工期边界上的合同/里程碑/计划/任务
+      if (projectBefore) {
+        const notes = applyScheduleCascade(r.target_id, projectBefore, payload);
+        if (notes.length) extra = '；已联动顺延' + notes.join('、');
+      }
+      // 联动2：合同经审批进入"履行中" → 项目状态自动转入施工中
+      if (r.target_type === 'contract' && payload.status === '履行中') {
+        const c = db.prepare('SELECT project_id FROM contracts WHERE id=?').get(r.target_id);
+        if (c) {
+          const n = db.prepare("UPDATE projects SET status='施工中' WHERE id=? AND status IN ('筹备中','招标中')").run(c.project_id).changes;
+          if (n) extra += '；项目状态已联动为"施工中"';
+        }
+      }
+    });
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) {
       return res.status(400).json({ message: '变更内容与现有记录冲突（如编号重复），无法应用' });
     }
     throw e;
-  }
-  db.prepare(`UPDATE change_requests SET status='approved',reviewed_by=?,reviewed_at=datetime('now','localtime'),review_comment=? WHERE id=?`)
-    .run(req.user.real_name, (req.body && req.body.comment) || null, r.id);
-
-  // 同一对象的其余待审批申请自动作废：否则会出现"记录为已通过但实际未生效"的失真审计
-  const superseded = db.prepare(
-    `UPDATE change_requests SET status='superseded',reviewed_by=?,reviewed_at=datetime('now','localtime'),review_comment=?
-     WHERE target_type=? AND target_id=? AND status='pending'`)
-    .run(req.user.real_name, '已被针对同一对象的另一条变更申请覆盖', r.target_type, r.target_id).changes;
-
-  // 联动1：项目开工/完工日期变化 → 顺延挂靠在工期边界上的合同/里程碑/计划/任务
-  let extra = '';
-  if (projectBefore) {
-    const notes = applyScheduleCascade(r.target_id, projectBefore, payload);
-    if (notes.length) extra = '；已联动顺延' + notes.join('、');
-  }
-  // 联动2：合同经审批进入"履行中" → 项目状态自动转入施工中
-  if (r.target_type === 'contract' && payload.status === '履行中') {
-    const c = db.prepare('SELECT project_id FROM contracts WHERE id=?').get(r.target_id);
-    if (c) {
-      const n = db.prepare("UPDATE projects SET status='施工中' WHERE id=? AND status IN ('筹备中','招标中')").run(c.project_id).changes;
-      if (n) extra += '；项目状态已联动为"施工中"';
-    }
   }
   if (superseded) extra += `；同对象的另外 ${superseded} 条待审批申请已自动作废`;
 

@@ -42,6 +42,9 @@ Views.Settings = {
     const load = async () => {
       const r = await http.get('/settings');
       Object.assign(form, r.map);
+      // map 中的值统一为字符串，数字型字段需还原为数值，否则 el-input-number 行为异常
+      form.max_upload_mb = Number(form.max_upload_mb) || 20;
+      form.backup_retention_days = Number(form.backup_retention_days) || 14;
       // 字典默认值
       if (!form.project_statuses) form.project_statuses = CFG.projectStatuses.join(',');
       if (!form.project_types) form.project_types = CFG.projectTypes.join(',');
@@ -51,6 +54,8 @@ Views.Settings = {
       saving.value = true;
       try {
         await http.put('/settings', form);
+        // 立即刷新前端字典，使修改无需重新登录/刷新即生效
+        await applySettings();
         ElementPlus.ElMessage.success('设置已保存');
       } finally { saving.value = false; }
     };

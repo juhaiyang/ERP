@@ -53,7 +53,8 @@ app.use('/api', (err, req, res, next) => {
     return res.status(400).json({ message: '请求体格式错误（非法JSON）' });
   }
   console.error(err);
-  res.status(500).json({ message: err.message || '服务器内部错误' });
+  // 不向客户端回显 err.message：可能包含 SQL 语句、文件路径等内部实现细节
+  res.status(500).json({ message: '服务器内部错误，请稍后重试' });
 });
 
 // 本地化的前端第三方库（离线可用）

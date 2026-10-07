@@ -1,9 +1,10 @@
 const express = require('express');
-const { db } = require('../db');
+const { db, tx } = require('../db');
 const { requireAdmin } = require('../auth');
 const V = require('../validate');
 const { validatePlan, validateTask } = require('../rules');
 const { cleanupChangeRequests } = require('./approvals');
+const { deleteAttachmentsFor } = require('./attachments');
 const { sendCSV } = require('../csv');
 const router = express.Router();
 
@@ -86,8 +87,10 @@ router.post('/', (req, res) => {
   const r = validatePlan(row);
   if (r.error) return res.status(r.code).json({ message: r.error });
 
-  const info = db.prepare(`INSERT INTO plans(${PLAN_FIELDS.join(',')}) VALUES(${PLAN_FIELDS.map(() => '?').join(',')})`)
-    .run(...PLAN_FIELDS.map(f => row[f] ?? null));
+  // 只写入请求体中出现的字段，缺省字段交由表结构默认值（如 status='编制中'）
+  const keys = PLAN_FIELDS.filter(f => row[f] !== undefined);
+  const info = db.prepare(`INSERT INTO plans(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`)
+    .run(...keys.map(f => row[f] ?? null));
   const saved = db.prepare('SELECT * FROM plans WHERE id=?').get(info.lastInsertRowid);
   saved.warnings = r.warnings;
   res.json(saved);
@@ -118,8 +121,11 @@ router.delete('/:id', requireAdmin, (req, res) => {
   const items = [['plan', Number(req.params.id)]];
   db.prepare('SELECT id FROM plan_tasks WHERE plan_id=?').all(req.params.id)
     .forEach(r => items.push(['task', r.id]));
-  cleanupChangeRequests(items);
-  db.prepare('DELETE FROM plans WHERE id=?').run(req.params.id);
+  tx(() => {
+    cleanupChangeRequests(items);
+    deleteAttachmentsFor('plan', req.params.id);
+    db.prepare('DELETE FROM plans WHERE id=?').run(req.params.id);
+  });
   res.json({ ok: 1 });
 });
 

@@ -37,13 +37,14 @@ const TARGET_TABLE = {
   'change-requests': { table: 'change_requests', name: 'target_name' }
 };
 
-/** 请求体脱敏：移除密码/令牌等字段 */
+/** 请求体脱敏：递归移除任意层级的密码/令牌等字段（嵌套对象同样处理） */
 function sanitize(body) {
   if (!body || typeof body !== 'object') return body;
+  if (Array.isArray(body)) return body.map(sanitize);
   const out = {};
   for (const [k, v] of Object.entries(body)) {
     if (SENSITIVE.test(k)) { out[k] = '******'; continue; }
-    out[k] = v;
+    out[k] = (v && typeof v === 'object') ? sanitize(v) : v;
   }
   return out;
 }
@@ -76,10 +77,9 @@ function classify(req) {
   return { module, action, target };
 }
 
+/** 来源 IP：仅取真实连接地址，不信任可伪造的 X-Forwarded-For */
 function clientIp(req) {
-  const fwd = req.headers['x-forwarded-for'];
-  if (fwd) return String(fwd).split(',')[0].trim();
-  return req.socket?.remoteAddress || req.ip || '';
+  return req.ip || req.socket?.remoteAddress || '';
 }
 
 const insert = db.prepare(`INSERT INTO audit_logs

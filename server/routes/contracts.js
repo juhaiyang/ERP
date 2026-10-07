@@ -1,9 +1,10 @@
 const express = require('express');
-const { db } = require('../db');
+const { db, tx } = require('../db');
 const { requireAdmin } = require('../auth');
 const V = require('../validate');
 const { validateContract, validatePayment } = require('../rules');
 const { cleanupChangeRequests } = require('./approvals');
+const { deleteAttachmentsFor } = require('./attachments');
 const { sendCSV } = require('../csv');
 const router = express.Router();
 
@@ -52,9 +53,14 @@ router.post('/', (req, res) => {
   const r = validateContract(row, { id: null });
   if (r.error) return res.status(r.code).json({ message: r.error });
 
-  const info = db.prepare(`INSERT INTO contracts(${FIELDS.join(',')}) VALUES(${FIELDS.map(() => '?').join(',')})`)
-    .run(...FIELDS.map(f => row[f] ?? null));
-  if (row.status === '履行中') activateProject(row.project_id);
+  // 只写入请求体中出现的字段，缺省字段交由表结构默认值（如 status='待签订'）
+  const keys = FIELDS.filter(f => row[f] !== undefined);
+  const info = tx(() => {
+    const ins = db.prepare(`INSERT INTO contracts(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`)
+      .run(...keys.map(f => row[f] ?? null));
+    if (row.status === '履行中') activateProject(row.project_id);
+    return ins;
+  });
   const saved = db.prepare('SELECT * FROM contracts WHERE id=?').get(info.lastInsertRowid);
   saved.warnings = r.warnings;
   res.json(saved);
@@ -71,8 +77,10 @@ router.put('/:id', requireAdmin, (req, res) => {
   const r = validateContract(merged, { id: Number(req.params.id) });
   if (r.error) return res.status(r.code).json({ message: r.error });
 
-  V.patchRow('contracts', 'id', Number(req.params.id), row, keys);
-  if (merged.status === '履行中') activateProject(merged.project_id);
+  tx(() => {
+    V.patchRow('contracts', 'id', Number(req.params.id), row, keys);
+    if (merged.status === '履行中') activateProject(merged.project_id);
+  });
   const saved = db.prepare('SELECT * FROM contracts WHERE id=?').get(req.params.id);
   saved.warnings = r.warnings;
   res.json(saved);
@@ -82,8 +90,11 @@ router.delete('/:id', requireAdmin, (req, res) => {
   if (!db.prepare('SELECT id FROM contracts WHERE id=?').get(req.params.id)) {
     return res.status(404).json({ message: '合同不存在' });
   }
-  cleanupChangeRequests([['contract', Number(req.params.id)]]);
-  db.prepare('DELETE FROM contracts WHERE id=?').run(req.params.id);
+  tx(() => {
+    cleanupChangeRequests([['contract', Number(req.params.id)]]);
+    deleteAttachmentsFor('contract', req.params.id);
+    db.prepare('DELETE FROM contracts WHERE id=?').run(req.params.id);
+  });
   res.json({ ok: 1 });
 });
 

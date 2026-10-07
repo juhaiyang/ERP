@@ -20,13 +20,13 @@ Views.Login = {
           </el-form-item>
           <el-button type="primary" size="large" style="width:100%" :loading="loading" @click="submit">登 录</el-button>
         </el-form>
-        <p class="login-tip">演示账号：admin（管理员）/ zhangs（项目经理）/ liuy（业务员），密码均为 123456</p>
+        <p class="login-tip">首次使用请使用管理员分配的账号登录，如需重置密码请联系系统管理员</p>
       </div>
     </div>`,
   setup() {
     const formRef = ref();
     const loading = ref(false);
-    const form = reactive({ username: 'admin', password: '123456' });
+    const form = reactive({ username: '', password: '' });
     const rules = {
       username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
       password: [{ required: true, message: '请输入密码', trigger: 'blur' }]
@@ -177,6 +177,8 @@ Views.Layout = {
     onMounted(() => {
       loadCrCount();
       loadUnread();
+      // 拉取系统设置覆盖前端字典（管理员改过的下拉枚举/上传上限），失败静默
+      applySettings();
       window.addEventListener('cr-changed', loadCrCount);
       pollTimer = setInterval(loadUnread, 30000);
     });
@@ -248,11 +250,20 @@ const routes = [
   }
 ];
 const router = VueRouter.createRouter({ history: VueRouter.createWebHashHistory(), routes });
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const token = localStorage.getItem('swc_token');
   if (!token && to.path !== '/login') return '/login';
   if (token && to.path === '/login') return '/dashboard';
-  if (to.meta && to.meta.adminOnly && currentUser().role !== '管理员') return '/dashboard';
+  if (to.meta && to.meta.adminOnly) {
+    // 以服务端返回的角色为准：localStorage 可被篡改，仅凭本地角色判断会放行管理员页面
+    try {
+      const me = await http.get('/me');
+      localStorage.setItem('swc_user', JSON.stringify(me));
+      if (me.role !== '管理员') return '/dashboard';
+    } catch {
+      return '/login';
+    }
+  }
 });
 
 /* ---------------- 根组件（中文语言包） ---------------- */

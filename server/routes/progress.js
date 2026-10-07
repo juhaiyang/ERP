@@ -1,9 +1,10 @@
 const express = require('express');
-const { db } = require('../db');
+const { db, tx } = require('../db');
 const { requireAdmin } = require('../auth');
 const V = require('../validate');
 const { validateRecord, validateMilestone } = require('../rules');
 const { cleanupChangeRequests } = require('./approvals');
+const { deleteAttachmentsFor } = require('./attachments');
 const { sendCSV } = require('../csv');
 const router = express.Router();
 
@@ -74,8 +75,11 @@ router.delete('/records/:id', requireAdmin, (req, res) => {
   if (!db.prepare('SELECT id FROM progress_records WHERE id=?').get(req.params.id)) {
     return res.status(404).json({ message: '进度填报不存在' });
   }
-  cleanupChangeRequests([['progress_record', Number(req.params.id)]]);
-  db.prepare('DELETE FROM progress_records WHERE id=?').run(req.params.id);
+  tx(() => {
+    cleanupChangeRequests([['progress_record', Number(req.params.id)]]);
+    deleteAttachmentsFor('progress', req.params.id);
+    db.prepare('DELETE FROM progress_records WHERE id=?').run(req.params.id);
+  });
   res.json({ ok: 1 });
 });
 

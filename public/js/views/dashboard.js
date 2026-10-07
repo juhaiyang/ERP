@@ -130,6 +130,9 @@ Views.Dashboard = {
     };
 
     onMounted(async () => {
+      // 先注册 resize 监听：若在 await 之后注册，接口异常时监听器将永远不会被挂上，
+      // 且 onBeforeUnmount 的移除随之失效
+      window.addEventListener('resize', resize);
       const d = await http.get('/stats/overview');
       cards.value[0].value = d.cards.projectTotal;
       cards.value[1].value = d.cards.activeProjects;
@@ -153,10 +156,14 @@ Views.Dashboard = {
       renderPie(d.typeDist);
       renderBar(d.projectProgress);
       renderLine(d.monthly);
-      window.addEventListener('resize', resize);
     });
     const resize = () => charts.forEach(c => c.resize());
-    onBeforeUnmount(() => window.removeEventListener('resize', resize));
+    onBeforeUnmount(() => {
+      window.removeEventListener('resize', resize);
+      // 销毁 echarts 实例，避免反复进出首页导致画布与事件监听泄漏
+      charts.forEach(c => { try { c.dispose(); } catch { /* 已销毁 */ } });
+      charts.length = 0;
+    });
 
     return { cards, pieRef, barRef, lineRef, deadlineSoon, syncAlerts };
   }

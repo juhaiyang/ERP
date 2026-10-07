@@ -1,10 +1,11 @@
 const express = require('express');
-const { db } = require('../db');
+const { db, tx } = require('../db');
 const { requireAdmin } = require('../auth');
 const V = require('../validate');
 const { validateProject } = require('../rules');
 const { applyScheduleCascade } = require('../cascade');
 const { cleanupChangeRequests } = require('./approvals');
+const { deleteAttachmentsFor } = require('./attachments');
 const { sendCSV } = require('../csv');
 const router = express.Router();
 
@@ -124,16 +125,18 @@ router.put('/:id', requireAdmin, (req, res) => {
   const r = validateProject(merged, { id: req.params.id, old: oldRow });
   if (r.error) return res.status(r.code).json({ message: r.error });
 
+  let notes = [];
   try {
-    V.patchRow('projects', 'id', req.params.id, row, keys);
+    // 项目写库与工期联动必须原子完成：否则可能出现"项目已延期、下游合同/计划未顺延"的半套数据
+    tx(() => {
+      V.patchRow('projects', 'id', req.params.id, row, keys);
+      notes = applyScheduleCascade(Number(req.params.id), oldRow, row);
+    });
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) return res.status(400).json({ message: '项目编号已存在' });
     throw e;
   }
   const saved = db.prepare('SELECT * FROM projects WHERE id=?').get(req.params.id);
-
-  // 工期变更联动：与审批路径保持完全一致的行为
-  const notes = applyScheduleCascade(saved.id, oldRow, row);
   saved.warnings = [...r.warnings, ...notes.map(n => '已联动顺延' + n)];
   res.json(saved);
 });
@@ -153,8 +156,20 @@ router.delete('/:id', requireAdmin, (req, res) => {
   }
   db.prepare('SELECT id FROM plan_tasks WHERE plan_id IN (SELECT id FROM plans WHERE project_id=?)')
     .all(id).forEach(r => items.push(['task', r.id]));
-  cleanupChangeRequests(items);
-  db.prepare('DELETE FROM projects WHERE id=?').run(id);
+
+  // attachments 无外键，需连同磁盘文件一并清理（项目本体及其下属对象）
+  const attTargets = [['project', Number(id)]];
+  const attChildMap = { bids: 'bid', contracts: 'contract', progress_records: 'progress', plans: 'plan' };
+  for (const [table, mod] of Object.entries(attChildMap)) {
+    db.prepare(`SELECT id FROM ${table} WHERE project_id=?`).all(id)
+      .forEach(r => attTargets.push([mod, r.id]));
+  }
+
+  tx(() => {
+    cleanupChangeRequests(items);
+    attTargets.forEach(([mod, tid]) => deleteAttachmentsFor(mod, tid));
+    db.prepare('DELETE FROM projects WHERE id=?').run(id);
+  });
   res.json({ ok: 1 });
 });
 

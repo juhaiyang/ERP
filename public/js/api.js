@@ -31,26 +31,44 @@ window.notifySave = function (resp, okText) {
  * @param {string} filename 下载文件名（不含扩展名）
  */
 window.exportCSV = function (url, filename) {
+  return downloadFile(url, (filename || 'export') + '.csv')
+    .then(() => ElementPlus.ElMessage.success('导出成功'))
+    .catch(() => {});
+};
+
+/**
+ * 带鉴权下载任意文件（附件/备份/导出）：
+ * 直接 fetch 以绕过 axios 的 JSON 拦截器，但同样必须校验响应状态——
+ * 否则 401/404 时会拿到错误 JSON 并保存成"损坏的文件"。
+ */
+window.downloadFile = function (url, filename) {
   const token = localStorage.getItem('swc_token');
   return fetch('/api' + url, { headers: { Authorization: 'Bearer ' + token } })
-    .then(r => {
-      if (!r.ok) return r.json().then(e => { throw new Error(e.message || '导出失败'); });
+    .then(async r => {
+      if (!r.ok) {
+        let msg = '下载失败';
+        try { msg = (await r.json()).message || msg; } catch { /* 非 JSON 响应，用默认提示 */ }
+        throw new Error(msg);
+      }
       return r.blob();
     })
     .then(blob => {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = (filename || 'export') + '.csv';
+      a.download = filename || 'download';
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(a.href);
-      ElementPlus.ElMessage.success('导出成功');
     })
-    .catch(e => ElementPlus.ElMessage.error(e.message || '导出失败'));
+    .catch(e => {
+      ElementPlus.ElMessage.error(e.message || '下载失败');
+      throw e;
+    });
 };
 
-window.CFG = {
+/* 业务字典：默认值可被"系统设置"中的同名字典覆盖（见 applySettings） */
+window.CFG = reactive({
   projectTypes: ['小流域综合治理', '坡耕地整治', '淤地坝工程', '生态清洁小流域', '水土保持监测', '淤地坝除险加固', '其他'],
   projectStatuses: ['筹备中', '招标中', '施工中', '已完工', '已验收', '暂停'],
   bidMethods: ['公开招标', '邀请招标', '竞争性谈判', '直接委托'],
@@ -59,7 +77,26 @@ window.CFG = {
   payStages: ['预付款', '进度款', '结算款', '质保金'],
   taskStatuses: ['未开始', '进行中', '已完成', '已延期'],
   milestoneStatuses: ['未开始', '进行中', '已完成'],
-  planStatuses: ['编制中', '执行中', '已完成', '已调整']
+  planStatuses: ['编制中', '执行中', '已完成', '已调整'],
+  maxUploadMb: 20,
+  companyName: '水土保持项目管理平台'
+});
+
+const splitList = v => String(v || '').split(',').map(s => s.trim()).filter(Boolean);
+
+/**
+ * 拉取系统设置并覆盖前端硬编码字典（管理员在"系统设置"保存后即时生效）。
+ * CFG 为 reactive，覆盖后会驱动已渲染页面的下拉选项更新。
+ */
+window.applySettings = function () {
+  return http.get('/settings').then(r => {
+    const m = (r && r.map) || {};
+    if (m.project_statuses) CFG.projectStatuses = splitList(m.project_statuses);
+    if (m.project_types) CFG.projectTypes = splitList(m.project_types);
+    if (m.contract_statuses) CFG.contractStatuses = splitList(m.contract_statuses);
+    if (m.max_upload_mb) CFG.maxUploadMb = Number(m.max_upload_mb) || CFG.maxUploadMb;
+    if (m.company_name) CFG.companyName = m.company_name;
+  }).catch(() => { /* 设置拉取失败不影响主流程 */ });
 };
 
 window.tagType = function (val, map) {

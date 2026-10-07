@@ -343,8 +343,9 @@ Views.Projects = {
       return (b / 1024 / 1024).toFixed(2) + ' MB';
     };
     const beforeUpload = (file) => {
-      if (file.size > 20 * 1024 * 1024) {
-        ElementPlus.ElMessage.error('文件大小不能超过 20MB');
+      const limitMb = CFG.maxUploadMb || 20;
+      if (file.size > limitMb * 1024 * 1024) {
+        ElementPlus.ElMessage.error(`文件大小不能超过 ${limitMb}MB`);
         return false;
       }
       return true;
@@ -368,15 +369,7 @@ Views.Projects = {
       }
     };
     const downloadAtt = (row) => {
-      const token = localStorage.getItem('swc_token');
-      fetch('/api/attachments/' + row.id + '/download', { headers: { Authorization: 'Bearer ' + token } })
-        .then(r => r.blob()).then(blob => {
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = row.filename;
-          a.click();
-          URL.revokeObjectURL(a.href);
-        });
+      downloadFile('/attachments/' + row.id + '/download', row.filename).catch(() => {});
     };
     const delAtt = (row) => {
       ElementPlus.ElMessageBox.confirm(`确定删除附件「${row.filename}」吗？`, '删除确认', { type: 'warning' })

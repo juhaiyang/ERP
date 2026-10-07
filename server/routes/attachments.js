@@ -31,11 +31,39 @@ const upload = multer({
   limits: { fileSize: MAX_SIZE }
 });
 
+/** 删除磁盘文件（不存在或失败仅记日志，不阻断主流程） */
+function removeUploaded(storedName) {
+  if (!storedName) return;
+  const filePath = path.join(UPLOAD_DIR, storedName);
+  if (fs.existsSync(filePath)) {
+    try { fs.unlinkSync(filePath); } catch (e) { console.error('[附件删除文件失败]', e.message); }
+  }
+}
+
+/**
+ * 业务对象删除时同步清理其附件（先删磁盘文件再删库记录），供各模块删除路由调用。
+ * @returns {number} 清理的附件数量
+ */
+function deleteAttachmentsFor(module, targetId) {
+  const list = db.prepare('SELECT * FROM attachments WHERE module=? AND target_id=?')
+    .all(module, Number(targetId));
+  list.forEach(a => removeUploaded(a.stored_name));
+  if (list.length) {
+    db.prepare('DELETE FROM attachments WHERE module=? AND target_id=?').run(module, Number(targetId));
+  }
+  return list.length;
+}
+
 /** 上传附件：POST /api/attachments?module=project&target_id=1  (multipart/form-data, field=file) */
 router.post('/', upload.single('file'), (req, res) => {
   const { module, target_id } = req.query;
-  if (!ALLOWED_MODULES.includes(module)) return res.status(400).json({ message: '不支持的模块类型' });
-  if (!target_id) return res.status(400).json({ message: '缺少 target_id' });
+  // multer 已把文件落盘，校验失败必须回收，否则磁盘残留孤儿文件
+  const fail = (code, message) => {
+    if (req.file) removeUploaded(req.file.filename);
+    return res.status(code).json({ message });
+  };
+  if (!ALLOWED_MODULES.includes(module)) return fail(400, '不支持的模块类型');
+  if (!target_id) return fail(400, '缺少 target_id');
   if (!req.file) return res.status(400).json({ message: '未收到文件' });
 
   const info = db.prepare(`INSERT INTO attachments
@@ -74,12 +102,10 @@ router.delete('/:id', (req, res) => {
   if (req.user.role !== '管理员' && att.uploaded_by !== req.user.id) {
     return res.status(403).json({ message: '仅管理员或上传人可删除' });
   }
-  const filePath = path.join(UPLOAD_DIR, att.stored_name);
-  if (fs.existsSync(filePath)) {
-    try { fs.unlinkSync(filePath); } catch (e) { console.error('[附件删除文件失败]', e.message); }
-  }
+  removeUploaded(att.stored_name);
   db.prepare('DELETE FROM attachments WHERE id=?').run(req.params.id);
   res.json({ ok: 1 });
 });
 
 module.exports = router;
+module.exports.deleteAttachmentsFor = deleteAttachmentsFor;

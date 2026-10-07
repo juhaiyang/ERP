@@ -1,6 +1,6 @@
 /** 登录鉴权：Bearer Token（内存存储，支持登出、绝对过期、空闲过期与失败锁定） */
 const crypto = require('crypto');
-const { db, hashPassword } = require('./db');
+const { db, hashPassword, verifyPassword, isLegacyHash } = require('./db');
 
 /**
  * token -> { info, exp(绝对过期时间), last(最近活跃时间) }
@@ -68,7 +68,7 @@ function login(req, res) {
   }
 
   const user = db.prepare('SELECT * FROM users WHERE username=?').get(username);
-  if (!user || user.password !== hashPassword(password)) {
+  if (!user || !verifyPassword(password, user.password)) {
     noteFail(loginKeyOf(username), ip);
     const left = MAX_FAIL - (failState.get(loginKeyOf(username))?.count || 0);
     return res.status(401).json({
@@ -82,16 +82,20 @@ function login(req, res) {
   }
   noteSuccess(loginKeyOf(username));
 
+  // 旧版固定盐 sha256 哈希在登录成功后自动升级为 scrypt + 随机盐
+  if (isLegacyHash(user.password)) {
+    db.prepare('UPDATE users SET password=? WHERE id=?').run(hashPassword(password), user.id);
+  }
+
   const token = crypto.randomBytes(24).toString('hex');
   const info = { id: user.id, username: user.username, real_name: user.real_name, role: user.role };
   tokens.set(token, { info, exp: Date.now() + ABSOLUTE_TTL, last: Date.now() });
   res.json({ token, user: info });
 }
 
+/** 来源 IP：仅取真实连接地址，不信任客户端可伪造的 X-Forwarded-For（否则可通过伪造头绕过登录失败限制） */
 function clientIp(req) {
-  const fwd = req.headers['x-forwarded-for'];
-  if (fwd) return String(fwd).split(',')[0].trim();
-  return req.socket?.remoteAddress || req.ip || '';
+  return req.ip || req.socket?.remoteAddress || '';
 }
 
 function requireAuth(req, res, next) {
@@ -158,7 +162,7 @@ function changePassword(req, res) {
   if (new_password.length < 6) return res.status(400).json({ message: '新密码至少6位' });
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
   if (!user) return res.status(404).json({ message: '用户不存在' });
-  if (user.password !== hashPassword(old_password)) return res.status(400).json({ message: '原密码错误' });
+  if (!verifyPassword(old_password, user.password)) return res.status(400).json({ message: '原密码错误' });
   if (old_password === new_password) return res.status(400).json({ message: '新密码不能与原密码相同' });
   db.prepare('UPDATE users SET password=? WHERE id=?').run(hashPassword(new_password), req.user.id);
   res.json({ ok: 1, message: '密码修改成功' });

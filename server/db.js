@@ -14,8 +14,58 @@ const db = new DatabaseSync(path.join(DATA_DIR, 'swc.db'));
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA busy_timeout = 5000;');
 
+/**
+ * 口令哈希：scrypt + 每用户随机盐（格式 scrypt$salt$hash）。
+ * 早期版本使用固定盐的 sha256，verifyPassword 兼容校验旧值，用户下次改密时自动升级。
+ */
 function hashPassword(pwd) {
-  return crypto.createHash('sha256').update('swc#' + pwd).digest('hex');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(pwd), salt, 32).toString('hex');
+  return `scrypt$${salt}$${hash}`;
+}
+
+/** 校验口令：兼容历史 sha256 格式（固定盐），新格式走 scrypt 定时安全比较 */
+function verifyPassword(pwd, stored) {
+  if (typeof stored !== 'string' || !stored) return false;
+  if (stored.startsWith('scrypt$')) {
+    const [, salt, hash] = stored.split('$');
+    if (!salt || !hash) return false;
+    const calc = crypto.scryptSync(String(pwd), salt, 32).toString('hex');
+    const a = Buffer.from(calc, 'hex');
+    const b = Buffer.from(hash, 'hex');
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  }
+  // 旧格式回退：sha256('swc#' + pwd)
+  const legacy = crypto.createHash('sha256').update('swc#' + pwd).digest('hex');
+  const a = Buffer.from(legacy, 'hex');
+  const b = Buffer.from(stored, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/** 是否为需升级的历史弱哈希 */
+function isLegacyHash(stored) {
+  return typeof stored === 'string' && stored.length === 64 && !stored.startsWith('scrypt$');
+}
+
+/**
+ * 事务包装：node:sqlite 无 transaction() API，统一用 BEGIN/COMMIT/ROLLBACK。
+ * 支持嵌套调用（内层复用外层事务，不重复 BEGIN）。
+ */
+let txDepth = 0;
+function tx(fn) {
+  if (txDepth > 0) return fn();
+  txDepth++;
+  db.exec('BEGIN');
+  try {
+    const r = fn();
+    db.exec('COMMIT');
+    return r;
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch { /* 回滚失败时保留原始异常 */ }
+    throw e;
+  } finally {
+    txDepth--;
+  }
 }
 
 db.exec(`
@@ -431,4 +481,4 @@ function seedSettings() {
 }
 seedSettings();
 
-module.exports = { db, hashPassword };
+module.exports = { db, hashPassword, verifyPassword, isLegacyHash, tx };

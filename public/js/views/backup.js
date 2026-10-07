@@ -62,15 +62,7 @@ Views.Backup = {
       } finally { backing.value = false; }
     };
     const download = (row) => {
-      const token = localStorage.getItem('swc_token');
-      fetch('/api/backup/' + encodeURIComponent(row.filename) + '/download', { headers: { Authorization: 'Bearer ' + token } })
-        .then(r => r.blob()).then(blob => {
-          const a = document.createElement('a');
-          a.href = URL.createObjectURL(blob);
-          a.download = row.filename;
-          a.click();
-          URL.revokeObjectURL(a.href);
-        });
+      downloadFile('/backup/' + encodeURIComponent(row.filename) + '/download', row.filename).catch(() => {});
     };
     const remove = (row) => {
       ElementPlus.ElMessageBox.confirm(`确定删除备份「${row.filename}」吗？`, '删除确认', { type: 'warning' })

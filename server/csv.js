@@ -6,6 +6,8 @@ function toCSV(rows, columns) {
   const escape = v => {
     if (v === null || v === undefined) return '';
     let s = String(v).replace(/\r?\n/g, ' ');
+    // 防 CSV 公式注入：以 = + - @ 或制表符开头的单元格，Excel 会当公式执行，前置单引号使其变为文本
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
     if (/[",]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
     return s;
   };

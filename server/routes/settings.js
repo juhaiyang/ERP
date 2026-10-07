@@ -3,7 +3,7 @@
  * 前端可拉取用于覆盖硬编码的业务字典
  */
 const express = require('express');
-const { db } = require('../db');
+const { db, tx } = require('../db');
 const { requireAdmin } = require('../auth');
 const router = express.Router();
 
@@ -23,8 +23,7 @@ router.put('/', requireAdmin, (req, res) => {
   const stmt = db.prepare(`INSERT INTO system_settings(key,value,description,updated_at)
     VALUES(?,?,?,datetime('now','localtime'))
     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`);
-  const tx = db.transaction(rows => rows.forEach(([k, v]) => stmt.run(k, String(v ?? ''), null)));
-  tx(entries);
+  tx(() => entries.forEach(([k, v]) => stmt.run(k, String(v ?? ''), null)));
   res.json({ ok: 1, message: '设置已保存' });
 });
 

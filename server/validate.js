@@ -32,8 +32,15 @@ function isMissing(v) {
 /** 空值归一为 null */
 function norm(v) { return isMissing(v) ? null : v; }
 
-/** 转为数字：空值返回 null，非数字返回 NaN */
-function toNum(v) { return isMissing(v) ? null : Number(v); }
+/**
+ * 转为数字：空值返回 null，非数字返回 NaN。
+ * 显式拒绝布尔与对象：Number(true)=1、Number([])=0 会绕过数值校验被 SQLite 隐式转换写入。
+ */
+function toNum(v) {
+  if (isMissing(v)) return null;
+  if (typeof v === 'boolean' || typeof v === 'object') return NaN;
+  return Number(v);
+}
 
 /** 严格数值判断（拒绝 true / 'abc' / null） */
 function isNum(n) { return typeof n === 'number' && Number.isFinite(n); }
